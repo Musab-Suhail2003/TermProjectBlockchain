@@ -2,17 +2,20 @@
 pragma solidity >= 0.5.0 < 0.9.0;
 
 import "./ERC20interface.sol";
-contract TokenAuction {
+
+contract Auction {
     address payable public owner;
     string public name;
     string public description;
+    uint256 public minAmount;
     uint256 public start;
     uint256 public end;
     bool public canceled;
     bool public ended;
     
-    // ERC20 token contract
+    // Token configuration
     Crypto public token;
+    bool public useEth; // true for ETH, false for ERC20
 
     mapping(address => uint256) bids;
     address public highestBidder;
@@ -27,42 +30,62 @@ contract TokenAuction {
     constructor(
         string memory _name,
         string memory _description,
-        address _tokenAddress,
+        address _tokenAddress, // Pass address(0) for ETH, token address for ERC20
+        uint256 _minAmount,
         uint256 startAt, 
         uint256 endAt, 
         uint256 _increment,
         address _owner
     ) {
         require(startAt < endAt, "Invalid times");
-        require(_tokenAddress != address(0), "Invalid token address");
         require(bytes(_name).length > 0, "Name cannot be empty");
         require(bytes(_description).length > 0, "Description cannot be empty");
+        require(bytes(_name).length > 0, "Name cannot be empty");
+        require(_minAmount > 0, "Minimum amount must be greater than 0");
         
         name = _name;
         description = _description;
+        minAmount = _minAmount;
         owner = payable(_owner);
-        token = Crypto(_tokenAddress);
         start = startAt;
         end = endAt;
         increment = _increment;
+        
+        // Determine if using ETH or ERC20
+        if (_tokenAddress == address(0)) {
+            useEth = true;
+        } else {
+            useEth = false;
+            token = Crypto(_tokenAddress);
+        }
     }
 
-    function placeBid(uint256 bidAmount) public {
+    function placeBid(uint256 bidAmount) public payable {
         require(msg.sender != owner, "Owner cannot bid");
         require(!ended && !canceled, "Auction ended or canceled");
         require(block.timestamp >= start, "Auction not started");
         require(block.timestamp < end, "Auction ended");
-        require(bidAmount > 0, "Bid must be greater than 0");
+        require(bidAmount > minAmount, "Bid must be greater than minimum amount");
         
-        // Check if bidder has enough tokens
-        require(token.balanceOf(msg.sender) >= bidAmount, "Insufficient token balance");
+        uint256 actualBidAmount;
+        
+        if (useEth) {
+            require(msg.value > 0, "Must send ETH to bid");
+            actualBidAmount = msg.value;
+        } else {
+            require(bidAmount > 0, "Bid must be greater than 0");
+            require(token.balanceOf(msg.sender) >= bidAmount, "Insufficient token balance");
+            actualBidAmount = bidAmount;
+        }
         
         // Calculate total bid for this bidder
-        uint256 totalBid = bids[msg.sender] + bidAmount;
+        uint256 totalBid = bids[msg.sender] + actualBidAmount;
         require(totalBid >= highestBindingBid + increment, "Bid is too low");
 
-        // Transfer tokens from bidder to this contract using transferFrom
-        require(token.transferFrom(msg.sender, address(this), bidAmount), "Token transfer failed");
+        // Handle token transfer for ERC20
+        if (!useEth) {
+            require(token.transferFrom(msg.sender, address(this), actualBidAmount), "Token transfer failed");
+        }
         
         // Update bid amount
         bids[msg.sender] = totalBid;
@@ -75,11 +98,16 @@ contract TokenAuction {
         highestBidder = msg.sender;
         highestBid = totalBid;
         
-        // Calculate new highest binding bid
+        // Calculate new highest binding bid and handle refunds
         if (previousHighestBidder != address(0)) {
             // Return the previous highest bid to the previous bidder
             bids[previousHighestBidder] = 0;
-            require(token.transfer(previousHighestBidder, previousHighestBid), "Refund transfer failed");
+            
+            if (useEth) {
+                payable(previousHighestBidder).transfer(previousHighestBid);
+            } else {
+                require(token.transfer(previousHighestBidder, previousHighestBid), "Refund transfer failed");
+            }
             
             // Set binding bid to previous bid + increment, or current bid if lower
             highestBindingBid = previousHighestBid + increment;
@@ -103,7 +131,11 @@ contract TokenAuction {
         
         // Refund the highest bidder if there is one
         if (highestBidder != address(0) && highestBid > 0) {
-            require(token.transfer(highestBidder, highestBid), "Refund transfer failed");
+            if (useEth) {
+                payable(highestBidder).transfer(highestBid);
+            } else {
+                require(token.transfer(highestBidder, highestBid), "Refund transfer failed");
+            }
             bids[highestBidder] = 0;
         }
         
@@ -119,12 +151,20 @@ contract TokenAuction {
 
         if (highestBidder != address(0) && !canceled) {
             // Transfer the winning amount to the owner
-            require(token.transfer(owner, highestBindingBid), "Payment transfer failed");
+            if (useEth) {
+                owner.transfer(highestBindingBid);
+            } else {
+                require(token.transfer(owner, highestBindingBid), "Payment transfer failed");
+            }
             
             // If there's a difference between highest bid and binding bid, refund it
             uint256 refund = highestBid - highestBindingBid;
             if (refund > 0) {
-                require(token.transfer(highestBidder, refund), "Refund transfer failed");
+                if (useEth) {
+                    payable(highestBidder).transfer(refund);
+                } else {
+                    require(token.transfer(highestBidder, refund), "Refund transfer failed");
+                }
             }
             
             bids[highestBidder] = 0;
@@ -139,7 +179,12 @@ contract TokenAuction {
         require(amount > 0, "Nothing to withdraw");
         
         bids[msg.sender] = 0;
-        require(token.transfer(msg.sender, amount), "Withdrawal transfer failed");
+        
+        if (useEth) {
+            payable(msg.sender).transfer(amount);
+        } else {
+            require(token.transfer(msg.sender, amount), "Withdrawal transfer failed");
+        }
     }
 
     // View functions
@@ -147,8 +192,12 @@ contract TokenAuction {
         return bids[bidder];
     }
     
-    function getTokenBalance() external view returns (uint256) {
-        return token.balanceOf(address(this));
+    function getBalance() external view returns (uint256) {
+        if (useEth) {
+            return address(this).balance;
+        } else {
+            return token.balanceOf(address(this));
+        }
     }
     
     function isActive() public view returns (bool) {
@@ -158,6 +207,7 @@ contract TokenAuction {
     function getAuctionInfo() external view returns (
         string memory _name,
         string memory _description,
+        uint256 _minAmount,
         address _owner,
         uint256 _start,
         uint256 _end,
@@ -171,6 +221,7 @@ contract TokenAuction {
         return (
             name,
             description,
+            minAmount,
             owner,
             start,
             end,
