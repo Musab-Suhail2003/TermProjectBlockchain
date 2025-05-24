@@ -23,8 +23,8 @@ contract Crypto is ERC20Interface {
     mapping(address => uint) public balances;
     mapping(address => mapping(address => uint)) public allowed;
 
-    constructor() {
-        totalSupply = 1000;
+    constructor(uint256 _totSup) {
+        totalSupply = _totSup;
         founder = msg.sender;
         balances[founder] = totalSupply;
     }
