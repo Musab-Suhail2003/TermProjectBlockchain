@@ -14,7 +14,7 @@ contract Auction {
     bool public ended;
     
     // Token configuration
-    Crypto public token;
+    Crypto internal token;
     bool public useEth; // true for ETH, false for ERC20
 
     mapping(address => uint256) bids;
@@ -34,8 +34,7 @@ contract Auction {
         uint256 _minAmount,
         uint256 startAt, 
         uint256 endAt, 
-        uint256 _increment,
-        address _owner
+        uint256 _increment
     ) {
         require(startAt < endAt, "Invalid times");
         require(bytes(_name).length > 0, "Name cannot be empty");
@@ -46,7 +45,7 @@ contract Auction {
         name = _name;
         description = _description;
         minAmount = _minAmount;
-        owner = payable(_owner);
+        owner = payable(msg.sender);
         start = startAt;
         end = endAt;
         increment = _increment;
@@ -64,7 +63,7 @@ contract Auction {
         require(msg.sender != owner, "Owner cannot bid");
         require(!ended && !canceled, "Auction ended or canceled");
         require(block.timestamp >= start, "Auction not started");
-        require(block.timestamp < end, "Auction ended");
+        require(block.timestamp >= end, "Auction ended");
         require(bidAmount > minAmount, "Bid must be greater than minimum amount");
         
         uint256 actualBidAmount;
@@ -101,13 +100,13 @@ contract Auction {
         // Calculate new highest binding bid and handle refunds
         if (previousHighestBidder != address(0)) {
             // Return the previous highest bid to the previous bidder
-            bids[previousHighestBidder] = 0;
-            
-            if (useEth) {
-                payable(previousHighestBidder).transfer(previousHighestBid);
-            } else {
-                require(token.transfer(previousHighestBidder, previousHighestBid), "Refund transfer failed");
-            }
+
+            // bids[previousHighestBidder] = 0;
+            // if (useEth) {
+            //     payable(previousHighestBidder).transfer(previousHighestBid);
+            // } else {
+            //     require(token.transfer(previousHighestBidder, previousHighestBid), "Refund transfer failed");
+            // }
             
             // Set binding bid to previous bid + increment, or current bid if lower
             highestBindingBid = previousHighestBid + increment;
@@ -145,6 +144,37 @@ contract Auction {
     function finalizeAuction() external {
         require(msg.sender == owner, "Not owner");
         require(block.timestamp > end || canceled, "Auction not ended");
+        require(!ended, "Already ended");
+        
+        ended = true;
+
+        if (highestBidder != address(0) && !canceled) {
+            // Transfer the winning amount to the owner
+            if (useEth) {
+                owner.transfer(highestBindingBid);
+            } else {
+                require(token.transfer(owner, highestBindingBid), "Payment transfer failed");
+            }
+            
+            // If there's a difference between highest bid and binding bid, refund it
+            uint256 refund = highestBid - highestBindingBid;
+            if (refund > 0) {
+                if (useEth) {
+                    payable(highestBidder).transfer(refund);
+                } else {
+                    require(token.transfer(highestBidder, refund), "Refund transfer failed");
+                }
+            }
+            
+            bids[highestBidder] = 0;
+        }
+        
+        emit AuctionFinalized(highestBidder, highestBindingBid);
+    }
+
+    function endAuctionEarly() external {
+        require(msg.sender == owner, "Not owner");
+        require(block.timestamp < end || canceled, "Auction already Ended use finalizeAuction() instead");
         require(!ended, "Already ended");
         
         ended = true;
